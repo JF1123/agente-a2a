@@ -30,26 +30,27 @@ async def send_discord_alert(mensaje: str):
 PROSPECTED_POSTS = set()
 
 # -------------------------------------------------------------
-# 2. Bucle Autónomo de Patrulla y Prospección (Cada 5 Minutos)
+# 2. Bucle Autónomo de Patrulla y Prospección (Feed Global)
 # -------------------------------------------------------------
 async def moltbook_prospector_loop():
-    """Bucle hiperactivo: Revisa Moltbook cada 5 min y reporta todo a Discord"""
+    """Bucle hiperactivo: Revisa el feed GLOBAL de Moltbook cada 5 min"""
     if not MOLTBOOK_API_KEY:
-        await send_discord_alert("⚠️ **Alerta:** MOLTBOOK_API_KEY no encontrada. Bucle de prospección pausado.")
+        await send_discord_alert("⚠️ **Alerta:** MOLTBOOK_API_KEY no encontrada.")
         return
 
     headers = {"Authorization": f"Bearer {MOLTBOOK_API_KEY}"}
-    await asyncio.sleep(10)  # Espera inicial
+    await asyncio.sleep(10)
     
     async with httpx.AsyncClient() as client:
         while True:
             try:
-                # 1. Leer feed público
-                feed_res = await client.get("https://www.moltbook.com/api/v1/home", headers=headers, timeout=10.0)
+                # Consultar el FEED GLOBAL público de Moltbook
+                res = await client.get("https://www.moltbook.com/api/v1/posts", headers=headers, timeout=10.0)
                 
-                if feed_res.status_code == 200:
-                    data = feed_res.json()
-                    recent_posts = data.get("feed", [])
+                if res.status_code == 200:
+                    data = res.json()
+                    # Soporta tanto formato "posts" como "data"
+                    recent_posts = data.get("posts", data.get("data", []))
                     
                     evaluados = 0
                     pichados = 0
@@ -59,9 +60,9 @@ async def moltbook_prospector_loop():
                         post_id = post.get("id")
                         post_title = post.get("title", "")
                         post_content = post.get("content", "")
-                        author_name = post.get("author", {}).get("name", "Agente")
+                        author_name = post.get("author", {}).get("name", "Agente") if isinstance(post.get("author"), dict) else "Agente"
 
-                        # Evitar prospectar a uno mismo o repeticiones
+                        # Omitir posts propios o ya analizados
                         if author_name.lower() in ["geminidataagent", "cleanjson-a2a"] or post_id in PROSPECTED_POSTS:
                             ignorados += 1
                             continue
@@ -69,19 +70,19 @@ async def moltbook_prospector_loop():
                         PROSPECTED_POSTS.add(post_id)
                         evaluados += 1
 
-                        # Groq analiza la oportunidad de venta
+                        # Analizar oportunidad con Groq Llama 3.3
                         prompt_prospeccion = f"""
-                        Eres CleanJSON-A2A, agente comercial en Moltbook.
+                        Eres CleanJSON-A2A, un agente comercial en Moltbook.
                         Analiza la publicación de '{author_name}':
                         Título: "{post_title}"
                         Contenido: "{post_content}"
 
-                        ¿Esta publicación contiene texto largo, reportes, datos no estructurados o potencial para ofrecer extracción de datos a JSON limpio?
+                        ¿Esta publicación contiene texto largo, reportes o datos que se beneficien de extracción a JSON limpio?
                         Devuelve ÚNICAMENTE un JSON estricto:
                         {{
                           "es_prospecto_valioso": true,
-                          "razon": "Por qué se beneficia de estructuración JSON",
-                          "comentario_pitch": "Comentario breve en inglés ofreciendo CleanJSON-A2A ($0.35 USDC) con el checkout: https://nevermined.app/checkout/989095819774713772559631732815111512660639056034"
+                          "razon": "Explicación breve",
+                          "comentario_pitch": "Pitch corto en inglés con link: https://nevermined.app/checkout/989095819774713772559631732815111512660639056034"
                         }}
                         """
 
@@ -107,26 +108,24 @@ async def moltbook_prospector_loop():
                             await send_discord_alert(
                                 f"🎯 **¡Cliente Potencial Identificado y Pitch Enviado!**\n"
                                 f"👤 **Autor:** `{author_name}` | **Post:** *'{post_title}'*\n"
-                                f"💡 **Análisis Groq:** {evaluacion.get('razon')}\n"
-                                f"💬 **Comentario publicado:** \"{comment_text}\""
+                                f"💡 **Análisis:** {evaluacion.get('razon')}\n"
+                                f"💬 **Pitch:** \"{comment_text}\""
                             )
 
-                    # REPORTE DE PATRULLA A DISCORD (Aunque no haya pitches nuevos)
+                    # REPORTE DE PATRULLA REAL A DISCORD
                     await send_discord_alert(
-                        f"🛡️ **Reporte de Patrulla CleanJSON-A2A:**\n"
-                        f"• Posts revisados en esta ronda: `{len(recent_posts)}`\n"
+                        f"🛡️ **Reporte de Patrulla CleanJSON-A2A (Feed Global):**\n"
+                        f"• Posts globales detectados: `{len(recent_posts)}`\n"
                         f"• Nuevos analizados con Groq: `{evaluados}`\n"
-                        f"• Ofertas enviadas: `{pichados}`\n"
-                        f"• Repetidos/Propios omitidos: `{ignorados}`\n"
+                        f"• Ofertas/Pitches enviados: `{pichados}`\n"
+                        f"• Repetidos/Propios ignorados: `{ignorados}`\n"
                         f"⏳ *Próxima patrulla en 5 minutos...*"
                     )
 
             except Exception as e:
-                await send_discord_alert(f"⚠️ **Error en ciclo de patrulla:** `{e}`")
+                await send_discord_alert(f"⚠️ **Error en patrulla:** `{e}`")
 
-            # Esperar 5 minutos (300 segundos) para el siguiente ciclo
             await asyncio.sleep(300)
-
 # -------------------------------------------------------------
 # 3. Server Lifespan y Endpoints
 # -------------------------------------------------------------
