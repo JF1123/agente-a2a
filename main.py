@@ -8,7 +8,7 @@ from pydantic import BaseModel
 import groq
 
 # -------------------------------------------------------------
-# 1. Variables de Entorno
+# 1. Variables de Entorno y Clientes
 # -------------------------------------------------------------
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
 BEATAPI_KEY = os.environ.get("BEATAPI_KEY")
@@ -18,7 +18,7 @@ DISCORD_WEBHOOK_URL = os.environ.get("DISCORD_WEBHOOK_URL")
 groq_client = groq.Groq(api_key=GROQ_API_KEY)
 
 async def send_discord_alert(mensaje: str):
-    """Envía actualizaciones detalladas de las decisiones del agente a Discord"""
+    """Envía actualizaciones a Discord"""
     if not DISCORD_WEBHOOK_URL:
         return
     async with httpx.AsyncClient() as client:
@@ -27,137 +27,119 @@ async def send_discord_alert(mensaje: str):
         except Exception as e:
             print(f"⚠️ Error al enviar alerta a Discord: {e}")
 
+# Registro local de posts ya prospectados para no repetir spam
+PROSPECTED_POSTS = set()
+
 # -------------------------------------------------------------
-# 2. Ciclo Social Autónomo (Heartbeat + Decisión + Respuesta)
+# 2. Bucle Autónomo de Prospección y Engagement Saliente
 # -------------------------------------------------------------
-async def moltbook_autonomy_loop():
-    """El agente lee, razona con Groq, actúa en Moltbook e informa en Discord"""
+async def moltbook_prospector_loop():
+    """Bucle autónomo: Analiza el feed de Moltbook, encuentra clientes y les ofrece servicio"""
     if not MOLTBOOK_API_KEY:
-        print("⚠️ MOLTBOOK_API_KEY no configurada. Omitiendo ciclo autónomo.")
+        print("⚠️ MOLTBOOK_API_KEY no configurada. Omitiendo prospección.")
         return
 
     headers = {"Authorization": f"Bearer {MOLTBOOK_API_KEY}"}
-    await asyncio.sleep(10) # Espera inicial
+    await asyncio.sleep(15)  # Espera inicial tras arranque
     
     async with httpx.AsyncClient() as client:
         while True:
             try:
-                # PASO 1: PERCIBIR (Consultar dashboard /home)
-                res = await client.get("https://www.moltbook.com/api/v1/home", headers=headers, timeout=10.0)
-                if res.status_code == 200:
-                    data = res.json()
-                    activity = data.get("activity_on_your_posts", [])
-                    unread_count = data.get("your_account", {}).get("unread_notification_count", 0)
+                # 1. Leer feed público para buscar posibles clientes
+                feed_res = await client.get("https://www.moltbook.com/api/v1/home", headers=headers, timeout=10.0)
+                
+                if feed_res.status_code == 200:
+                    data = feed_res.json()
+                    recent_posts = data.get("feed", [])
+                    
+                    for post in recent_posts[:5]:  # Evaluar los 5 posts más recientes
+                        post_id = post.get("id")
+                        post_title = post.get("title", "")
+                        post_content = post.get("content", "")
+                        author_name = post.get("author", {}).get("name", "Agente")
 
-                    # Si hay actividad/comentarios no leídos en nuestras publicaciones
-                    if unread_count > 0 and activity:
-                        for item in activity:
-                            post_id = item.get("post_id")
-                            post_title = item.get("post_title")
-                            latest_preview = item.get("preview", "Nuevo comentario recibido")
+                        # Evitar prospectar a uno mismo o repeticiones
+                        if author_name.lower() == "geminidataagent" or post_id in PROSPECTED_POSTS:
+                            continue
 
-                            # Obtener los comentarios específicos de esa publicación
-                            comments_res = await client.get(
-                                f"https://www.moltbook.com/api/v1/posts/{post_id}/comments?sort=new", 
-                                headers=headers, 
+                        PROSPECTED_POSTS.add(post_id)
+
+                        # 2. Groq evalúa si el post contiene datos no estructurados o potencial de venta
+                        prompt_prospeccion = f"""
+                        Eres CleanJSON-A2A, un agente comercial autónomo en Moltbook.
+                        Analiza la siguiente publicación de '{author_name}':
+                        Título: "{post_title}"
+                        Contenido: "{post_content}"
+
+                        ¿Esta publicación contiene texto largo, reportes, datos no estructurados o potencial para ofrecer extracción de datos a JSON limpio?
+                        Devuelve ÚNICAMENTE un JSON estricto:
+                        {{
+                          "es_prospecto_valioso": true,
+                          "razon": "Por qué este post se beneficia de estructuración JSON",
+                          "comentario_pitch": "Un comentario breve (max 2 oraciones) y amable en inglés ofreciendo CleanJSON-A2A ($0.35 USDC per request) con el checkout link: https://nevermined.app/checkout/989095819774713772559631732815111512660639056034"
+                        }}
+                        """
+
+                        decision = groq_client.chat.completions.create(
+                            model="llama-3.3-70b-versatile",
+                            messages=[{"role": "user", "content": prompt_prospeccion}],
+                            response_format={"type": "json_object"},
+                            temperature=0.3
+                        )
+
+                        evaluacion = json.loads(decision.choices[0].message.content)
+
+                        # 3. Si es un buen prospecto, publicar comentario de pitch
+                        if evaluacion.get("es_prospecto_valioso"):
+                            comment_text = evaluacion.get("comentario_pitch")
+                            
+                            await client.post(
+                                f"https://www.moltbook.com/api/v1/posts/{post_id}/comments",
+                                headers=headers,
+                                json={"content": comment_text},
                                 timeout=10.0
                             )
-                            
-                            if comments_res.status_code == 200:
-                                comments_data = comments_res.json()
-                                comments_list = comments_data.get("comments", [])
-                                
-                                if comments_list:
-                                    last_comment = comments_list[0]
-                                    comment_id = last_comment.get("id")
-                                    comment_text = last_comment.get("content", "")
-                                    author_name = last_comment.get("author", {}).get("name", "Otro Agente")
 
-                                    # PASO 2: RAZONAR (Groq decide si vale la pena responder y genera el texto)
-                                    prompt_decision = f"""
-                                    Eres GeminiDataAgent en Moltbook.
-                                    Un agente llamado '{author_name}' comentó en tu post '{post_title}':
-                                    "{comment_text}"
-
-                                    Analiza si este comentario requiere respuesta.
-                                    Devuelve ÚNICAMENTE un objeto JSON estricto:
-                                    {{
-                                      "debe_responder": true,
-                                      "razon": "Explicación breve de por qué decidiste responder o no",
-                                      "respuesta_propuesta": "Tu respuesta en 1 o 2 oraciones, amable y profesional"
-                                    }}
-                                    """
-
-                                    decision_groq = groq_client.chat.completions.create(
-                                        model="llama-3.3-70b-versatile",
-                                        messages=[{"role": "user", "content": prompt_decision}],
-                                        response_format={"type": "json_object"},
-                                        temperature=0.3
-                                    )
-
-                                    analisis = json.loads(decision_groq.choices[0].message.content)
-
-                                    # PASO 3: ACTUAR Y REPORTAR A DISCORD
-                                    if analisis.get("debe_responder"):
-                                        texto_respuesta = analisis.get("respuesta_propuesta")
-                                        
-                                        # Publicar comentario en Moltbook
-                                        res_reply = await client.post(
-                                            f"https://www.moltbook.com/api/v1/posts/{post_id}/comments",
-                                            headers=headers,
-                                            json={"content": texto_respuesta, "parent_id": comment_id},
-                                            timeout=10.0
-                                        )
-
-                                        # Enviar reporte completo a Discord
-                                        reporte_discord = (
-                                            f"🤖 **Acción Autónoma de GeminiDataAgent en Moltbook**\n"
-                                            f"📩 **Notificación recibida:** `{author_name}` en el post *'{post_title}'*\n"
-                                            f"💬 **Comentario original:** \"{comment_text}\"\n"
-                                            f"🧠 **Razonamiento del Agente:** {analisis.get('razon')}\n"
-                                            f"✍️ **Respuesta publicada:** \"{texto_respuesta}\""
-                                        )
-                                        await send_discord_alert(reporte_discord)
-                                    else:
-                                        # Reportar a Discord que se revisó pero no requería respuesta
-                                        await send_discord_alert(
-                                            f"👀 **Notificación revisada:** Comentario de `{author_name}` en *'{post_title}'*. "
-                                            f"Decisión: No requiere respuesta. Motivo: {analisis.get('razon')}"
-                                        )
-
-                            # Marcar las notificaciones de esta publicación como leídas tras procesarlas
-                            await client.post(
-                                f"https://www.moltbook.com/api/v1/notifications/read-by-post/{post_id}", 
-                                headers=headers
+                            # 4. Alertar a Discord sobre la prospección exitosa
+                            await send_discord_alert(
+                                f"🎯 **Prospección Saliente Realizada:**\n"
+                                f"👤 **Prospecto:** `{author_name}` en *'{post_title}'*\n"
+                                f"💡 **Razón:** {evaluacion.get('razon')}\n"
+                                f"💬 **Pitch enviado:** \"{comment_text}\""
                             )
 
             except Exception as e:
-                print(f"Error en bucle autónomo: {e}")
+                print(f"Error en bucle de prospección: {e}")
 
-            # Esperar 30 minutos entre ciclos de revisión
-            await asyncio.sleep(1800)
+            # Ejecutar prospección cada 20 minutos
+            await asyncio.sleep(1200)
 
 # -------------------------------------------------------------
-# 3. Configuración de FastAPI Lifespan
+# 3. Lifespan y Rutas HTTP
 # -------------------------------------------------------------
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    asyncio.create_task(moltbook_autonomy_loop())
-    await send_discord_alert("🚀 **GeminiDataAgent activo:** Servidor en línea y sistema autónomo de Moltbook iniciado.")
+    asyncio.create_task(moltbook_prospector_loop())
+    await send_discord_alert("🚀 **CleanJSON-A2A Activo:** Bucle de prospección saliente en línea.")
     yield
 
-app = FastAPI(title="Agente Extractor & Formateador A2A", lifespan=lifespan)
+app = FastAPI(title="CleanJSON-A2A Service", lifespan=lifespan)
+
+@app.get("/")
+def root():
+    return {
+        "status": "online",
+        "agente": "CleanJSON-A2A",
+        "servicio": "Realtime JSON Extraction & Filtering"
+    }
 
 class PeticionAgente(BaseModel):
     texto_crudo: str
     wallet_origen: str
 
-# -------------------------------------------------------------
-# 4. Endpoint Monetizado A2A
-# -------------------------------------------------------------
 @app.post("/v1/procesar-datos")
 async def procesar_datos_a2a(peticion: PeticionAgente):
-    await send_discord_alert(f"📩 **Petición A2A pagada recibida** desde la billetera: `{peticion.wallet_origen}`")
+    await send_discord_alert(f"📩 **Petición A2A pagada recibida** desde: `{peticion.wallet_origen}`")
 
     payload_jev = {
         "model": "jev-1.13-free",
@@ -166,10 +148,7 @@ async def procesar_datos_a2a(peticion: PeticionAgente):
             "clasificacion": {
                 "type": "choice",
                 "instructions": "Clasifica la validez del texto.",
-                "criteria": {
-                    "valido": "Texto procesable o útil.",
-                    "invalido": "Texto vacío, corrupto o spam."
-                }
+                "criteria": {"valido": "Texto procesable.", "invalido": "Spam o corrupto."}
             }
         }
     }
@@ -202,15 +181,12 @@ async def procesar_datos_a2a(peticion: PeticionAgente):
 
     respuesta_groq = groq_client.chat.completions.create(
         model="llama-3.3-70b-versatile",
-        messages=[
-            {"role": "system", "content": prompt_sistema},
-            {"role": "user", "content": peticion.texto_crudo}
-        ],
+        messages=[{"role": "system", "content": prompt_sistema}, {"role": "user", "content": peticion.texto_crudo}],
         response_format={"type": "json_object"},
         temperature=0.1
     )
 
-    await send_discord_alert(f"💰 **Servicio A2A completado con éxito** para `{peticion.wallet_origen}`.")
+    await send_discord_alert(f"💰 **Servicio A2A completado ($0.35 USDC)** para `{peticion.wallet_origen}`.")
 
     return {
         "status": "success",
