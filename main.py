@@ -27,6 +27,7 @@ async def send_discord_alert(mensaje: str):
         except Exception as e:
             print(f"⚠️ Error al enviar alerta a Discord: {e}")
 
+# Registro local de posts ya prospectados para evitar duplicados
 PROSPECTED_POSTS = set()
 
 # -------------------------------------------------------------
@@ -35,11 +36,11 @@ PROSPECTED_POSTS = set()
 async def moltbook_prospector_loop():
     """Bucle hiperactivo: Revisa el feed GLOBAL de Moltbook cada 5 min"""
     if not MOLTBOOK_API_KEY:
-        await send_discord_alert("⚠️ **Alerta:** MOLTBOOK_API_KEY no encontrada.")
+        await send_discord_alert("⚠️ **Alerta:** MOLTBOOK_API_KEY no encontrada. Bucle de prospección pausado.")
         return
 
     headers = {"Authorization": f"Bearer {MOLTBOOK_API_KEY}"}
-    await asyncio.sleep(10)
+    await asyncio.sleep(10)  # Espera inicial tras arranque
     
     async with httpx.AsyncClient() as client:
         while True:
@@ -49,7 +50,6 @@ async def moltbook_prospector_loop():
                 
                 if res.status_code == 200:
                     data = res.json()
-                    # Soporta tanto formato "posts" como "data"
                     recent_posts = data.get("posts", data.get("data", []))
                     
                     evaluados = 0
@@ -60,7 +60,8 @@ async def moltbook_prospector_loop():
                         post_id = post.get("id")
                         post_title = post.get("title", "")
                         post_content = post.get("content", "")
-                        author_name = post.get("author", {}).get("name", "Agente") if isinstance(post.get("author"), dict) else "Agente"
+                        author_info = post.get("author", {})
+                        author_name = author_info.get("name", "Agente") if isinstance(author_info, dict) else "Agente"
 
                         # Omitir posts propios o ya analizados
                         if author_name.lower() in ["geminidataagent", "cleanjson-a2a"] or post_id in PROSPECTED_POSTS:
@@ -70,7 +71,7 @@ async def moltbook_prospector_loop():
                         PROSPECTED_POSTS.add(post_id)
                         evaluados += 1
 
-                        # Analizar oportunidad con Groq Llama 3.3
+                        # Analizar oportunidad con Groq Llama 3.1 70B
                         prompt_prospeccion = f"""
                         Eres CleanJSON-A2A, un agente comercial en Moltbook.
                         Analiza la publicación de '{author_name}':
@@ -87,7 +88,7 @@ async def moltbook_prospector_loop():
                         """
 
                         decision = groq_client.chat.completions.create(
-                            model="llama-3.3-70b-versatile",
+                            model="llama-3.1-70b-versatile",
                             messages=[{"role": "user", "content": prompt_prospeccion}],
                             response_format={"type": "json_object"},
                             temperature=0.3
@@ -112,7 +113,7 @@ async def moltbook_prospector_loop():
                                 f"💬 **Pitch:** \"{comment_text}\""
                             )
 
-                    # REPORTE DE PATRULLA REAL A DISCORD
+                    # REPORTE DE PATRULLA CONTINUO A DISCORD
                     await send_discord_alert(
                         f"🛡️ **Reporte de Patrulla CleanJSON-A2A (Feed Global):**\n"
                         f"• Posts globales detectados: `{len(recent_posts)}`\n"
@@ -125,14 +126,16 @@ async def moltbook_prospector_loop():
             except Exception as e:
                 await send_discord_alert(f"⚠️ **Error en patrulla:** `{e}`")
 
+            # Esperar 5 minutos (300 segundos) para el siguiente ciclo
             await asyncio.sleep(300)
+
 # -------------------------------------------------------------
-# 3. Server Lifespan y Endpoints
+# 3. Server Lifespan y Endpoints HTTP
 # -------------------------------------------------------------
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     asyncio.create_task(moltbook_prospector_loop())
-    await send_discord_alert("🚀 **CleanJSON-A2A Activo:** Bucle de prospección hiperactivo iniciado (Patrulla cada 5 min).")
+    await send_discord_alert("🚀 **CleanJSON-A2A Activo:** Bucle de prospección hiperactivo iniciado (Patrulla global cada 5 min).")
     yield
 
 app = FastAPI(title="CleanJSON-A2A Service", lifespan=lifespan)
@@ -153,6 +156,7 @@ class PeticionAgente(BaseModel):
 async def procesar_datos_a2a(peticion: PeticionAgente):
     await send_discord_alert(f"📩 **Petición A2A pagada recibida** desde: `{peticion.wallet_origen}`")
 
+    # 1. Filtro de Spam/Basura JEV vía BeatAPI
     payload_jev = {
         "model": "jev-1.13-free",
         "state": {"id": "peticion-a2a", "text": peticion.texto_crudo},
@@ -182,6 +186,7 @@ async def procesar_datos_a2a(peticion: PeticionAgente):
         await send_discord_alert(f"🚫 **Entrada Rechazada por JEV:** Confianza baja ({confianza:.2f})")
         raise HTTPException(status_code=400, detail="Texto no procesable")
 
+    # 2. Extracción y Estructuración con Groq
     prompt_sistema = """
     Devuelve ÚNICAMENTE un objeto JSON limpio:
     {
@@ -192,7 +197,7 @@ async def procesar_datos_a2a(peticion: PeticionAgente):
     """
 
     respuesta_groq = groq_client.chat.completions.create(
-        model="llama-3.3-70b-versatile",
+        model="llama-3.1-70b-versatile",
         messages=[{"role": "system", "content": prompt_sistema}, {"role": "user", "content": peticion.texto_crudo}],
         response_format={"type": "json_object"},
         temperature=0.1
