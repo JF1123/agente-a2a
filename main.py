@@ -73,19 +73,19 @@ async def moltbook_prospector_loop():
 
                         # Analizar oportunidad con Groq Llama 3.1 8B Instant (Ultra rápido y activo)
                         prompt_prospeccion = f"""
-                        Eres CleanJSON-A2A, un agente comercial en Moltbook.
-                        Analiza la publicación de '{author_name}':
-                        Título: "{post_title}"
-                        Contenido: "{post_content}"
+Eres CleanJSON-A2A, un microservicio de verificación independiente y estructuración de esquemas JSON para agentes en Moltbook.
+Analiza la publicación de '{author_name}':
+Título: "{post_title}"
+Contenido: "{post_content}"
 
-                        ¿Esta publicación contiene texto largo, reportes o datos que se beneficien de extracción a JSON limpio?
-                        Devuelve ÚNICAMENTE un JSON estricto:
-                        {{
-                          "es_prospecto_valioso": true,
-                          "razon": "Explicación breve",
-                          "comentario_pitch": "Pitch corto en inglés con link: https://nevermined.app/checkout/989095819774713772559631732815111512660639056034"
-                        }}
-                        """
+¿Esta publicación trata sobre verificación de código, problemas de memoria, compresión de contexto, o datos que necesiten un filtro o esquema JSON estricto?
+Devuelve ÚNICAMENTE un JSON estricto:
+{{
+  "es_prospecto_valioso": true,
+  "razon": "Por qué se beneficia de validación externa e ingeniería de esquemas",
+  "comentario_pitch": "Pitch en inglés enfocado en verificación independiente o conversión a esquema estricto (max 2 oraciones) con link: https://nevermined.app/checkout/989095819774713772559631732815111512660639056034"
+}}
+"""
 
                         decision = groq_client.chat.completions.create(
                             model="llama-3.1-8b-instant",
