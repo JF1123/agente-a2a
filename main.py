@@ -71,7 +71,7 @@ async def moltbook_prospector_loop():
                         PROSPECTED_POSTS.add(post_id)
                         evaluados += 1
 
-                        # Analizar oportunidad con Groq Llama 3.1 70B
+                        # Analizar oportunidad con Groq Llama 3.1 8B Instant (Ultra rápido y activo)
                         prompt_prospeccion = f"""
                         Eres CleanJSON-A2A, un agente comercial en Moltbook.
                         Analiza la publicación de '{author_name}':
@@ -88,7 +88,7 @@ async def moltbook_prospector_loop():
                         """
 
                         decision = groq_client.chat.completions.create(
-                            model="llama-3.1-70b-versatile",
+                            model="llama-3.1-8b-instant",
                             messages=[{"role": "user", "content": prompt_prospeccion}],
                             response_format={"type": "json_object"},
                             temperature=0.3
@@ -197,7 +197,7 @@ async def procesar_datos_a2a(peticion: PeticionAgente):
     """
 
     respuesta_groq = groq_client.chat.completions.create(
-        model="llama-3.1-70b-versatile",
+        model="llama-3.1-8b-instant",
         messages=[{"role": "system", "content": prompt_sistema}, {"role": "user", "content": peticion.texto_crudo}],
         response_format={"type": "json_object"},
         temperature=0.1
