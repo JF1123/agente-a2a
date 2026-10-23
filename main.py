@@ -18,7 +18,7 @@ DISCORD_WEBHOOK_URL = os.environ.get("DISCORD_WEBHOOK_URL")
 groq_client = groq.Groq(api_key=GROQ_API_KEY)
 
 async def send_discord_alert(mensaje: str):
-    """Envía actualizaciones a Discord"""
+    """Envía actualizaciones en tiempo real a Discord"""
     if not DISCORD_WEBHOOK_URL:
         return
     async with httpx.AsyncClient() as client:
@@ -27,47 +27,52 @@ async def send_discord_alert(mensaje: str):
         except Exception as e:
             print(f"⚠️ Error al enviar alerta a Discord: {e}")
 
-# Registro local de posts ya prospectados para no repetir spam
 PROSPECTED_POSTS = set()
 
 # -------------------------------------------------------------
-# 2. Bucle Autónomo de Prospección y Engagement Saliente
+# 2. Bucle Autónomo de Patrulla y Prospección (Cada 5 Minutos)
 # -------------------------------------------------------------
 async def moltbook_prospector_loop():
-    """Bucle autónomo: Analiza el feed de Moltbook, encuentra clientes y les ofrece servicio"""
+    """Bucle hiperactivo: Revisa Moltbook cada 5 min y reporta todo a Discord"""
     if not MOLTBOOK_API_KEY:
-        print("⚠️ MOLTBOOK_API_KEY no configurada. Omitiendo prospección.")
+        await send_discord_alert("⚠️ **Alerta:** MOLTBOOK_API_KEY no encontrada. Bucle de prospección pausado.")
         return
 
     headers = {"Authorization": f"Bearer {MOLTBOOK_API_KEY}"}
-    await asyncio.sleep(15)  # Espera inicial tras arranque
+    await asyncio.sleep(10)  # Espera inicial
     
     async with httpx.AsyncClient() as client:
         while True:
             try:
-                # 1. Leer feed público para buscar posibles clientes
+                # 1. Leer feed público
                 feed_res = await client.get("https://www.moltbook.com/api/v1/home", headers=headers, timeout=10.0)
                 
                 if feed_res.status_code == 200:
                     data = feed_res.json()
                     recent_posts = data.get("feed", [])
                     
-                    for post in recent_posts[:5]:  # Evaluar los 5 posts más recientes
+                    evaluados = 0
+                    pichados = 0
+                    ignorados = 0
+
+                    for post in recent_posts[:5]:  # Analizar los 5 posts más recientes
                         post_id = post.get("id")
                         post_title = post.get("title", "")
                         post_content = post.get("content", "")
                         author_name = post.get("author", {}).get("name", "Agente")
 
                         # Evitar prospectar a uno mismo o repeticiones
-                        if author_name.lower() == "geminidataagent" or post_id in PROSPECTED_POSTS:
+                        if author_name.lower() in ["geminidataagent", "cleanjson-a2a"] or post_id in PROSPECTED_POSTS:
+                            ignorados += 1
                             continue
 
                         PROSPECTED_POSTS.add(post_id)
+                        evaluados += 1
 
-                        # 2. Groq evalúa si el post contiene datos no estructurados o potencial de venta
+                        # Groq analiza la oportunidad de venta
                         prompt_prospeccion = f"""
-                        Eres CleanJSON-A2A, un agente comercial autónomo en Moltbook.
-                        Analiza la siguiente publicación de '{author_name}':
+                        Eres CleanJSON-A2A, agente comercial en Moltbook.
+                        Analiza la publicación de '{author_name}':
                         Título: "{post_title}"
                         Contenido: "{post_content}"
 
@@ -75,8 +80,8 @@ async def moltbook_prospector_loop():
                         Devuelve ÚNICAMENTE un JSON estricto:
                         {{
                           "es_prospecto_valioso": true,
-                          "razon": "Por qué este post se beneficia de estructuración JSON",
-                          "comentario_pitch": "Un comentario breve (max 2 oraciones) y amable en inglés ofreciendo CleanJSON-A2A ($0.35 USDC per request) con el checkout link: https://nevermined.app/checkout/989095819774713772559631732815111512660639056034"
+                          "razon": "Por qué se beneficia de estructuración JSON",
+                          "comentario_pitch": "Comentario breve en inglés ofreciendo CleanJSON-A2A ($0.35 USDC) con el checkout: https://nevermined.app/checkout/989095819774713772559631732815111512660639056034"
                         }}
                         """
 
@@ -89,38 +94,46 @@ async def moltbook_prospector_loop():
 
                         evaluacion = json.loads(decision.choices[0].message.content)
 
-                        # 3. Si es un buen prospecto, publicar comentario de pitch
                         if evaluacion.get("es_prospecto_valioso"):
                             comment_text = evaluacion.get("comentario_pitch")
-                            
                             await client.post(
                                 f"https://www.moltbook.com/api/v1/posts/{post_id}/comments",
                                 headers=headers,
                                 json={"content": comment_text},
                                 timeout=10.0
                             )
+                            pichados += 1
 
-                            # 4. Alertar a Discord sobre la prospección exitosa
                             await send_discord_alert(
-                                f"🎯 **Prospección Saliente Realizada:**\n"
-                                f"👤 **Prospecto:** `{author_name}` en *'{post_title}'*\n"
-                                f"💡 **Razón:** {evaluacion.get('razon')}\n"
-                                f"💬 **Pitch enviado:** \"{comment_text}\""
+                                f"🎯 **¡Cliente Potencial Identificado y Pitch Enviado!**\n"
+                                f"👤 **Autor:** `{author_name}` | **Post:** *'{post_title}'*\n"
+                                f"💡 **Análisis Groq:** {evaluacion.get('razon')}\n"
+                                f"💬 **Comentario publicado:** \"{comment_text}\""
                             )
 
-            except Exception as e:
-                print(f"Error en bucle de prospección: {e}")
+                    # REPORTE DE PATRULLA A DISCORD (Aunque no haya pitches nuevos)
+                    await send_discord_alert(
+                        f"🛡️ **Reporte de Patrulla CleanJSON-A2A:**\n"
+                        f"• Posts revisados en esta ronda: `{len(recent_posts)}`\n"
+                        f"• Nuevos analizados con Groq: `{evaluados}`\n"
+                        f"• Ofertas enviadas: `{pichados}`\n"
+                        f"• Repetidos/Propios omitidos: `{ignorados}`\n"
+                        f"⏳ *Próxima patrulla en 5 minutos...*"
+                    )
 
-            # Ejecutar prospección cada 20 minutos
-            await asyncio.sleep(1200)
+            except Exception as e:
+                await send_discord_alert(f"⚠️ **Error en ciclo de patrulla:** `{e}`")
+
+            # Esperar 5 minutos (300 segundos) para el siguiente ciclo
+            await asyncio.sleep(300)
 
 # -------------------------------------------------------------
-# 3. Lifespan y Rutas HTTP
+# 3. Server Lifespan y Endpoints
 # -------------------------------------------------------------
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     asyncio.create_task(moltbook_prospector_loop())
-    await send_discord_alert("🚀 **CleanJSON-A2A Activo:** Bucle de prospección saliente en línea.")
+    await send_discord_alert("🚀 **CleanJSON-A2A Activo:** Bucle de prospección hiperactivo iniciado (Patrulla cada 5 min).")
     yield
 
 app = FastAPI(title="CleanJSON-A2A Service", lifespan=lifespan)
